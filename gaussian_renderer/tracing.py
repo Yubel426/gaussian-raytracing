@@ -5,6 +5,8 @@ from scene.gaussian_model import GaussianModel
 
 def render_image_trace(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None):  
     rays_o, rays_d = viewpoint_camera.get_rays()
+    rays_o = torch.tensor(rays_o, device='cuda', dtype=torch.float32)
+    rays_d = torch.tensor(rays_d, device='cuda', dtype=torch.float32)
     outputs = pc.trace(rays_o, rays_d)
     alpha = outputs['alpha'][:, None]
     depth = outputs['depth'][:, None]

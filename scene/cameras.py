@@ -52,22 +52,22 @@ class Camera(nn.Module):
         self.trans = trans
         self.scale = scale
 
-        self.world_view_transform = torch.tensor(getWorld2View2(R, T, trans, scale)).transpose(0, 1).cuda()
-        self.projection_matrix = getProjectionMatrix(znear=self.znear, zfar=self.zfar, fovX=self.FoVx, fovY=self.FoVy).transpose(0,1).cuda()
-        self.full_proj_transform = (self.world_view_transform.unsqueeze(0).bmm(self.projection_matrix.unsqueeze(0))).squeeze(0)
-        self.camera_center = self.world_view_transform.inverse()[3, :3]
-        self.c2w = self.world_view_transform.transpose(0, 1).inverse()
+        self.world_view_transform = getWorld2View2(R, T, trans, scale).T
+        self.projection_matrix = getProjectionMatrix(znear=self.znear, zfar=self.zfar, fovX=self.FoVx, fovY=self.FoVy).T
+        self.full_proj_transform = np.matmul(self.world_view_transform, self.projection_matrix)
+        self.camera_center = np.linalg.inv(self.world_view_transform)[3, :3]
+        self.c2w = np.linalg.inv(self.world_view_transform.transpose(0, 1))
         
-        v, u = torch.meshgrid(torch.arange(self.image_height, device='cuda'),
-                              torch.arange(self.image_width, device='cuda'), indexing="ij")
+        v, u = np.meshgrid(np.arange(self.image_height),
+                          np.arange(self.image_width), indexing="ij")
         focal_x = self.image_width / (2 * np.tan(self.FoVx * 0.5))
         focal_y = self.image_height / (2 * np.tan(self.FoVy * 0.5))
-        rays_d_camera = torch.stack([(u - self.image_width / 2 + 0.5) / focal_x,
-                                  (v - self.image_height / 2 + 0.5) / focal_y,
-                                  torch.ones_like(u)], dim=-1).reshape(-1, 3)
+        rays_d_camera = np.stack([(u - self.image_width / 2 + 0.5) / focal_x,
+                               (v - self.image_height / 2 + 0.5) / focal_y,
+                               np.ones_like(u)], axis=-1).reshape(-1, 3)
         rays_d = rays_d_camera @ self.world_view_transform[:3, :3].T
-        self.rays_d = F.normalize(rays_d, dim=-1)
-        self.rays_o = self.camera_center[None].expand_as(self.rays_d)
+        self.rays_d = rays_d / np.linalg.norm(rays_d, axis=-1, keepdims=True)
+        self.rays_o = np.broadcast_to(self.camera_center[None], self.rays_d.shape)
         self.rays_rgb = self.original_image.permute(1, 2, 0).reshape(-1, 3)
 
     def get_rays(self):

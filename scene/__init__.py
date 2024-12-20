@@ -88,11 +88,11 @@ class Scene:
                 train_rays_o.append(rays_o) 
                 train_rays_d.append(rays_d) 
                 train_rays_rgb.append(rays_rgb) 
-            train_rays_o = torch.cat(train_rays_o, dim=0)
-            train_rays_d = torch.cat(train_rays_d, dim=0)
-            train_rays_rgb = torch.cat(train_rays_rgb, dim=0)
-            self.train_rays[resolution_scale] = (train_rays_o, train_rays_d, train_rays_rgb)
-            
+            self.train_rays_o = np.concatenate(train_rays_o, axis=0)
+            self.train_rays_d = np.concatenate(train_rays_d, axis=0)
+            self.train_rays_rgb = torch.cat(train_rays_rgb, dim=0)
+            self.train_rays[resolution_scale] = (self.train_rays_o, self.train_rays_d, self.train_rays_rgb)
+
         
         if self.loaded_iter:
             self.gaussians.load_ply(os.path.join(self.model_path,
@@ -113,6 +113,8 @@ class Scene:
         return self.test_cameras[scale]
     
     def get_batch_rays(self, scale=1.0):
-        train_rays_o, train_rays_d, train_rays_rgb = self.train_rays[scale]
-        ray_id = torch.randint(0, train_rays_o.shape[0], (self.batch_size,), device="cuda")
-        return train_rays_o[ray_id], train_rays_d[ray_id], train_rays_rgb[ray_id]
+        ray_id = np.random.randint(0, self.train_rays_o.shape[0], (self.batch_size,))
+        ray_id_tensor = torch.tensor(ray_id, device='cuda', dtype=torch.long)
+        return (torch.tensor(self.train_rays_o[ray_id], device='cuda', dtype=torch.float32), 
+                torch.tensor(self.train_rays_d[ray_id], device='cuda', dtype=torch.float32), 
+                self.train_rays_rgb[ray_id_tensor])

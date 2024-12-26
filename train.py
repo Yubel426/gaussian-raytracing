@@ -11,6 +11,7 @@
 
 import os
 import torch
+import torchvision
 from random import randint
 from utils.loss_utils import l1_loss, ssim
 from gaussian_renderer import render, network_gui, render_trace, render_image_trace
@@ -106,12 +107,15 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if (iteration in saving_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
-
+            if iteration % 300 == 0:
+                img = render_image_trace(scene.getTrainCameras()[0], gaussians, pipe, background)['render']
+                torchvision.utils.save_image(img, os.path.join(args.model_path, "ours_{}".format(iteration) + ".png"))
+                
             is_densify = False
             # Densification
             if iteration < opt.densify_until_iter:
                 # Keep track of max radii in image-space for pruning
-                gaussians.add_densification_stats()
+                # gaussians.add_densification_stats()
 
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
                     is_densify = True

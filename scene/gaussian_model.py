@@ -59,14 +59,10 @@ class GaussianModel:
         self.spatial_lr_scale = 0
         self.setup_functions()
         
-        # icosahedron, outer sphere radius is 1.0
-        icosahedron = trimesh.creation.icosahedron()
-        
-        # change to inner sphere radius equal to 1.0
-        # the central point of each face must be on the unit sphere
-        self.unit_icosahedron_vertices = torch.from_numpy(icosahedron.vertices).float().cuda() * 1.2584 
-        self.unit_icosahedron_faces = torch.from_numpy(icosahedron.faces).long().cuda()
-        
+        mesh = trimesh.load("/home/nxt/qb/code/blender_mesh/data/nerf_synthetic_colmap/lego/combined_mesh_growing_radius.obj")
+        self.vertices_b = torch.from_numpy(mesh.vertices).float().cuda()
+        self.faces_b = torch.from_numpy(mesh.faces).cuda()
+        self.vertices_b = torch.nn.Parameter(self.vertices_b.contiguous().requires_grad_(True))
         self.gaussian_tracer = GaussianTracer(transmittance_min=transmittance_min)
         self.alpha_min = 1 / 255
 
@@ -132,27 +128,15 @@ class GaussianModel:
             self.active_sh_degree += 1
 
     def create_from_pcd(self, pcd : BasicPointCloud, spatial_lr_scale : float):
-        self.spatial_lr_scale = spatial_lr_scale
-        fused_point_cloud = torch.tensor(np.asarray(pcd.points).copy()).float().cuda()
-        fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().cuda())
-        features = torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
-        features[:, :3, 0 ] = fused_color
+        features = torch.zeros((self.faces_b.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
+        features[:, :3, 0 ] = torch.rand((self.faces_b.shape[0], 3), device="cuda")
         features[:, 3:, 1:] = 0.0
 
-        print("Number of points at initialisation : ", fused_point_cloud.shape[0])
 
-        dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()), 0.0000001)
-        scales = torch.log(torch.sqrt(dist2))[...,None].repeat(1, 3)
-        rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
-        rots[:, 0] = 1
+        opacities = inverse_sigmoid(0.1 * torch.ones((self.faces_b.shape[0], 1), dtype=torch.float, device="cuda"))
 
-        opacities = inverse_sigmoid(0.1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"))
-
-        self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
         self._features_dc = nn.Parameter(features[:,:,0:1].transpose(1, 2).contiguous().requires_grad_(True))
         self._features_rest = nn.Parameter(features[:,:,1:].transpose(1, 2).contiguous().requires_grad_(True))
-        self._scaling = nn.Parameter(scales.requires_grad_(True))
-        self._rotation = nn.Parameter(rots.requires_grad_(True))
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
 
     def training_setup(self, training_args):
@@ -161,12 +145,10 @@ class GaussianModel:
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
 
         l = [
-            {'params': [self._xyz], 'lr': training_args.position_lr_init * self.spatial_lr_scale, "name": "xyz"},
             {'params': [self._features_dc], 'lr': training_args.feature_lr, "name": "f_dc"},
             {'params': [self._features_rest], 'lr': training_args.feature_lr / 20.0, "name": "f_rest"},
             {'params': [self._opacity], 'lr': training_args.opacity_lr, "name": "opacity"},
-            {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling"},
-            {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"}
+            {'params': [self.vertices_b], 'lr': 0.0001, "name": "vertices_b"}
         ]
 
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
@@ -191,10 +173,6 @@ class GaussianModel:
         for i in range(self._features_rest.shape[1]*self._features_rest.shape[2]):
             l.append('f_rest_{}'.format(i))
         l.append('opacity')
-        for i in range(self._scaling.shape[1]):
-            l.append('scale_{}'.format(i))
-        for i in range(self._rotation.shape[1]):
-            l.append('rot_{}'.format(i))
         return l
 
     def save_ply(self, path):
@@ -420,23 +398,19 @@ class GaussianModel:
         gs_id = torch.arange(mu.shape[0], device="cuda")[:, None].expand(-1, faces_b.shape[1])
         return vertices_b.reshape(-1, 3), faces_b.reshape(-1, 3), gs_id.reshape(-1)
     
-    def get_SinvR(self):
-        return build_scaling_rotation(1 / self.get_scaling, self._rotation)
-
     def build_bvh(self):
-        vertices_b, faces_b, gs_id = self.get_boundings(alpha_min=self.alpha_min)
-        self.gaussian_tracer.build_bvh(vertices_b, faces_b, gs_id)
+        self.gs_id = torch.arange(self.get_xyz.shape[0], device="cuda")
+        self.gaussian_tracer.build_bvh(self.vertices_b, self.faces_b, self.gs_id)
         
     def update_bvh(self):
-        vertices_b, faces_b, gs_id = self.get_boundings(alpha_min=self.alpha_min)
-        self.gaussian_tracer.update_bvh(vertices_b, faces_b, gs_id)
+        self.gs_id = torch.arange(self.get_xyz.shape[0], device="cuda")
+        self.gaussian_tracer.update_bvh(self.vertices_b, self.faces_b, self.gs_id)
         
     def trace(self, rays_o, rays_d):
-        SinvR = self.get_SinvR()
-        means3D = self.get_xyz
+        SinvR = torch.rand((self.faces_b.shape[0], 3, 3), device="cuda")
         shs = self.get_features
         opacity = self.get_opacity
-        colors, depth, alpha = self.gaussian_tracer.trace(rays_o, rays_d, means3D, opacity, SinvR, shs, alpha_min=self.alpha_min, deg=self.active_sh_degree)
+        colors, depth, alpha = self.gaussian_tracer.trace(rays_o, rays_d, opacity, SinvR, shs, self.alpha_min, self.active_sh_degree)
         return {
             "render": colors,
             "depth": depth,
